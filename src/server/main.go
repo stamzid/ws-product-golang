@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+	"encoding/json"
+	"strconv"
 )
 
 type counters struct {
@@ -17,19 +19,35 @@ type counters struct {
 }
 
 type values struct {
-	view int
-	click int
+	View string `json:"view"`
+	Click string `json:"click"`
 }
+
+type ipTracker struct {
+	sync.Mutex
+	ipAddress string
+	startTime time.Time
+	count int
+}
+
+const requestInterval = 60
+const requestLimit = 10
 
 var (
 	c = counters{}
 	content = []string{"sports", "entertainment", "business", "education"}
 )
 
+var storeMutex = &sync.Mutex{}
 var counterQueue chan counters
 var mockStore map[string]values
+var requestStore map[string]ipTracker
 
 func welcomeHandler(w http.ResponseWriter, r *http.Request) {
+	if !isAllowed(r.RemoteAddr) {
+		http.Error(w, http.StatusText(429), http.StatusTooManyRequests)
+		return
+	}
 	fmt.Fprint(w, "Welcome to EQ Works 😎")
 }
 
@@ -40,6 +58,10 @@ func getSelection(data string) string {
 }
 
 func viewHandler(w http.ResponseWriter, r *http.Request) {
+	if !isAllowed(r.RemoteAddr) {
+		http.Error(w, http.StatusText(429), http.StatusTooManyRequests)
+		return
+	}
 	data := content[rand.Intn(len(content))]
 
 	c.Lock()
@@ -78,14 +100,38 @@ func processClick(data string) error {
 }
 
 func statsHandler(w http.ResponseWriter, r *http.Request) {
-	if !isAllowed() {
-		w.WriteHeader(429)
+	if !isAllowed(r.RemoteAddr) {
+		http.Error(w, http.StatusText(429), http.StatusTooManyRequests)
 		return
 	}
+	w.Header().Set("Content-type", "application/json")
+	w.WriteHeader(200)
+	json.NewEncoder(w).Encode(mockStore)
+	return
 }
 
-func isAllowed() bool {
-
+func isAllowed(ipAddress string) bool {
+	if val, ok := requestStore[ipAddress]; ok {
+		currentTime := time.Now()
+		if val.count < requestLimit {
+			val.count++
+			requestStore[ipAddress] = val
+			return true
+		} else {
+			timeDelta := currentTime.Sub(val.startTime).Seconds()
+			if timeDelta <= requestInterval {
+				return false
+			} else {
+				val.count = 1
+				val.startTime = currentTime
+				requestStore[ipAddress] = val
+				return true
+			}
+		}
+	} else {
+		value := ipTracker{ipAddress: ipAddress, startTime: time.Now(), count: 1}
+		requestStore[ipAddress] = value
+	}
 	return true
 }
 
@@ -95,7 +141,9 @@ func uploadCounters() error {
 		select {
 		case <- ticker.C:
 			cData := <- counterQueue
-			mockStore[cData.selection] = values{view: cData.view, click: cData.click}
+			storeMutex.Lock()
+			mockStore[cData.selection] = values{View: strconv.Itoa(cData.view), Click: strconv.Itoa(cData.click)}
+			storeMutex.Unlock()
 		}
 	}
 	return nil
@@ -106,8 +154,9 @@ func main() {
 	http.HandleFunc("/view/", viewHandler)
 	http.HandleFunc("/stats/", statsHandler)
 
-	counterQueue = make(chan counters, 5)
+	counterQueue = make(chan counters, 20)
 	mockStore = make(map[string]values)
+	requestStore = make(map[string]ipTracker)
 	go uploadCounters()
 
 	log.Fatal(http.ListenAndServe(":8080", nil))
