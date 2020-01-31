@@ -84,6 +84,10 @@ func viewHandler(w http.ResponseWriter, r *http.Request) {
 	c.Lock()
 	counterQueue <- c
 	c.Unlock()
+
+	w.Header().Set("Content-type", "application/json")
+	w.WriteHeader(204)
+	return
 }
 
 func processRequest(r *http.Request) error {
@@ -99,6 +103,7 @@ func processClick(data string) error {
 	return nil
 }
 
+// Returns statistics
 func statsHandler(w http.ResponseWriter, r *http.Request) {
 	if !isAllowed(r.RemoteAddr) {
 		http.Error(w, http.StatusText(429), http.StatusTooManyRequests)
@@ -110,6 +115,7 @@ func statsHandler(w http.ResponseWriter, r *http.Request) {
 	return
 }
 
+// Rate Limitar
 func isAllowed(ipAddress string) bool {
 	if val, ok := requestStore[ipAddress]; ok {
 		currentTime := time.Now()
@@ -135,6 +141,7 @@ func isAllowed(ipAddress string) bool {
 	return true
 }
 
+// Function Uploading Counters
 func uploadCounters() error {
 	ticker := time.NewTicker(5 * time.Second)
 	for {
